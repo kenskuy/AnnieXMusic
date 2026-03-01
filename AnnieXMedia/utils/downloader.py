@@ -1,6 +1,4 @@
-﻿# Authored By Certified Coders © 2025
 import asyncio
-import contextlib
 import glob
 import os
 import re
@@ -49,7 +47,7 @@ def extract_video_id(link: str) -> str:
 def get_cookie_file() -> Optional[str]:
     try:
         if _COOKIES_FILE and os.path.exists(_COOKIES_FILE) and os.path.getsize(_COOKIES_FILE) > 0:
-            return _COOKIES_FILE
+            return str(_COOKIES_FILE)
     except Exception:
         pass
     return None
@@ -60,12 +58,13 @@ def find_cached_file(video_id: str) -> Optional[str]:
         return None
     for ext in ("mp3", "m4a", "webm", "mp4", "mkv"):
         path = f"{DOWNLOAD_DIR}/{video_id}.{ext}"
-        if os.path.exists(path):
+        if os.path.exists(path) and os.path.getsize(path) > 0:
             return path
     return None
 
 
 def get_ytdlp_base_opts() -> Dict[str, object]:
+    # KONFIGURASI BARU: MENYAMAR SEBAGAI ANDROID
     opts = {
         "outtmpl": f"{DOWNLOAD_DIR}/%(id)s.%(ext)s",
         "quiet": True,
@@ -74,14 +73,23 @@ def get_ytdlp_base_opts() -> Dict[str, object]:
         "overwrites": False,
         "continuedl": True,
         "noprogress": True,
-        "concurrent_fragment_downloads": 16,
-        "http_chunk_size": 1 << 20,
-        "socket_timeout": 15,
-        "retries": 1,
-        "fragment_retries": 1,
+        "concurrent_fragment_downloads": 5,
+        "http_chunk_size": 10485760, # 10MB chunk
+        "socket_timeout": 30,
+        "retries": 10,
+        "fragment_retries": 10,
         "cachedir": str(CACHE_DIR),
         "ignoreerrors": True,
-        "merge_output_format": "mp4"
+        "merge_output_format": "mp4",
+        "nocheckcertificate": True,
+        "geo_bypass": True,
+        # TRICK: Gunakan Client Android agar tidak terdeteksi sebagai Bot VPS
+        "extractor_args": {
+            "youtube": {
+                "player_client": ["android", "web"],
+                "player_skip": ["configs", "js"],
+            }
+        }
     }
     if cookiefile := get_cookie_file():
         opts["cookiefile"] = cookiefile
@@ -122,6 +130,9 @@ async def download_file(url: str, out_path: str) -> Optional[str]:
                     if not chunk:
                         break
                     await f.write(chunk)
+        if os.path.exists(out_path) and os.path.getsize(out_path) == 0:
+            os.remove(out_path)
+            return None
         return out_path if os.path.exists(out_path) else None
     except Exception:
         return None
@@ -190,14 +201,16 @@ def get_final_path_from_info(info: Dict) -> Optional[str]:
     ext = info.get("ext")
     if ext:
         p = f"{DOWNLOAD_DIR}/{vid}.{ext}"
-        if os.path.exists(p):
+        if os.path.exists(p) and os.path.getsize(p) > 0:
             return p
     matches = sorted(
         glob.glob(f"{DOWNLOAD_DIR}/{vid}.*"),
         key=os.path.getmtime,
         reverse=True,
     )
-    return matches[0] if matches else None
+    if matches and os.path.getsize(matches[0]) > 0:
+        return matches[0]
+    return None
 
 
 def download_with_ytdlp_sync(link: str, fmt: str) -> Optional[str]:
@@ -210,8 +223,22 @@ def download_with_ytdlp_sync(link: str, fmt: str) -> Optional[str]:
                 return path
             ydl.download([link])
             return get_final_path_from_info(info)
-    except Exception:
-        return None
+    except Exception as e:
+        LOGGER.error(f"Download Error (Attempt 1): {e}")
+        
+        # JIKA GAGAL, COBA FORMAT APAPUN (Best)
+        try:
+            opts = get_ytdlp_base_opts()
+            opts["format"] = "best"
+            with YoutubeDL(opts) as ydl:
+                info = ydl.extract_info(link, download=False)
+                if path := get_final_path_from_info(info):
+                    return path
+                ydl.download([link])
+                return get_final_path_from_info(info)
+        except Exception as e2:
+            LOGGER.error(f"Download Error (Attempt 2 - Fallback): {e2}")
+            return None
 
 
 async def run_with_semaphore(coro):
@@ -243,7 +270,7 @@ async def race_ytdlp_and_api(yt_task, api_task, title: str):
     )
     for task in done:
         result = task.result()
-        if result and os.path.exists(result):
+        if result and os.path.exists(result) and os.path.getsize(result) > 0:
             source = "yt-dlp" if task is yt_task else "API"
             log_download_source(title, source)
             for p in pending:
@@ -254,7 +281,7 @@ async def race_ytdlp_and_api(yt_task, api_task, title: str):
     for task in pending:
         try:
             result = await task
-            if result and os.path.exists(result):
+            if result and os.path.exists(result) and os.path.getsize(result) > 0:
                 source = "yt-dlp" if task is yt_task else "API"
                 log_download_source(title, source)
                 return result
@@ -269,17 +296,24 @@ async def yt_dlp_download(link: str, type: str, title: str = "") -> Optional[str
     loop = asyncio.get_running_loop()
     vid = extract_video_id(link)
     if cached := find_cached_file(vid):
-        if title:
-            LOGGER.info(f"Track '{title}' - Served from cache")
-        return cached
+        if os.path.getsize(cached) > 0:
+            if title:
+                LOGGER.info(f"Track '{title}' - Served from cache")
+            return cached
+        else:
+            os.remove(cached)
 
     if type == "audio":
         key = f"audio:{link}"
-
         async def run():
             ytdlp_task = asyncio.create_task(
                 run_with_semaphore(
-                    loop.run_in_executor(None, download_with_ytdlp_sync, link, "bestaudio[ext=webm][acodec=opus]")
+                    loop.run_in_executor(
+                        None, 
+                        download_with_ytdlp_sync, 
+                        link, 
+                        "bestaudio/best"
+                    )
                 )
             )
             api_task = asyncio.create_task(api_download_audio(link)) if USE_AUDIO_API else None
@@ -289,16 +323,19 @@ async def yt_dlp_download(link: str, type: str, title: str = "") -> Optional[str
             if result and title:
                 log_download_source(title, "yt-dlp")
             return result
-
         return await deduplicate_download(key, run)
 
     elif type == "video":
         key = f"video:{link}"
-
         async def run():
             ytdlp_task = asyncio.create_task(
                 run_with_semaphore(
-                    loop.run_in_executor(None, download_with_ytdlp_sync, link, "(bestvideo[height<=?720][width<=?1280][ext=mp4])+(bestaudio)")
+                    loop.run_in_executor(
+                        None, 
+                        download_with_ytdlp_sync, 
+                        link, 
+                        "bestvideo+bestaudio/best"
+                    )
                 )
             )
             api_task = asyncio.create_task(api_download_video(link)) if USE_VIDEO_API else None
@@ -308,7 +345,6 @@ async def yt_dlp_download(link: str, type: str, title: str = "") -> Optional[str
             if result and title:
                 log_download_source(title, "yt-dlp")
             return result
-
         return await deduplicate_download(key, run)
 
     return None
