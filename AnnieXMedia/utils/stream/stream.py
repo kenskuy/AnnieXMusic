@@ -40,7 +40,6 @@ async def stream(
     if forceplay:
         await StreamController.force_stop_stream(chat_id)
 
-    # ==================== PLAYLIST ====================
     if streamtype == "playlist":
         msg = f"{_['play_19']}\n\n"
         count = 0
@@ -80,16 +79,12 @@ async def stream(
             else:
                 if not forceplay:
                     db[chat_id] = []
-                
-                # DOWNLOAD PROCESS
                 try:
                     file_path, direct = await YouTube.download(
                         vidid, mystic, video=is_video, videoid=vidid
                     )
-                except Exception as e:
-                    print(f"Playlist Download Error: {e}")
+                except Exception:
                     raise AssistantErr(_["play_14"])
-                
                 if not file_path:
                     raise AssistantErr(_["play_14"])
 
@@ -149,7 +144,6 @@ async def stream(
             reply_markup=upl,
         )
 
-    # ==================== YOUTUBE ====================
     elif streamtype == "youtube":
         link = result["link"]
         vidid = result["vidid"]
@@ -157,23 +151,14 @@ async def stream(
         duration_min = result["duration_min"]
         thumbnail = result["thumb"]
 
-        # === MODIFIKASI: DOWNLOAD DULU BARU JOIN CALL ===
         try:
             file_path, direct = await YouTube.download(
                 vidid, mystic, video=is_video, videoid=vidid
             )
-        except Exception as e:
-            print(f"YouTube Download Error: {e}")
+        except Exception:
             raise AssistantErr(_["play_14"])
-        
-        # Cek apakah file berhasil didownload
         if not file_path:
             raise AssistantErr(_["play_14"])
-        
-        # Cek fisik file di VPS (Pastikan bukan direct URL dan file ada)
-        if not direct:
-            if not os.path.exists(file_path):
-                raise AssistantErr("Gagal menemukan file lagu yang sudah didownload.")
 
         if await is_active_chat(chat_id):
             await put_queue(
@@ -197,21 +182,13 @@ async def stream(
         else:
             if not forceplay:
                 db[chat_id] = []
-            
-            # PLAY FILE LOKAL
-            try:
-                await StreamController.join_call(
-                    chat_id,
-                    original_chat_id,
-                    file_path,
-                    video=is_video,
-                    image=thumbnail,
-                )
-            except Exception as e:
-                # Tangani error join call
-                print(f"Join Call Error: {e}")
-                raise AssistantErr(_["call_8"])
-
+            await StreamController.join_call(
+                chat_id,
+                original_chat_id,
+                file_path,
+                video=is_video,
+                image=thumbnail,
+            )
             await put_queue(
                 chat_id,
                 original_chat_id,
@@ -240,7 +217,6 @@ async def stream(
             db[chat_id][0]["mystic"] = run
             db[chat_id][0]["markup"] = "stream"
 
-    # ==================== SOUNDCLOUD ====================
     elif streamtype == "soundcloud":
         file_path = result["filepath"]
         title = result["title"]
@@ -295,7 +271,6 @@ async def stream(
             db[chat_id][0]["mystic"] = run
             db[chat_id][0]["markup"] = "tg"
 
-    # ==================== TELEGRAM ====================
     elif streamtype == "telegram":
         file_path = result["path"]
         link = result["link"]
@@ -351,7 +326,6 @@ async def stream(
             db[chat_id][0]["mystic"] = run
             db[chat_id][0]["markup"] = "tg"
 
-    # ==================== LIVE STREAM ====================
     elif streamtype == "live":
         link = result["link"]
         vidid = result["vidid"]
@@ -422,7 +396,6 @@ async def stream(
             db[chat_id][0]["mystic"] = run
             db[chat_id][0]["markup"] = "tg"
 
-    # ==================== INDEX / M3U8 ====================
     elif streamtype == "index":
         link = result
         title = "ɪɴᴅᴇx ᴏʀ ᴍ3ᴜ8 ʟɪɴᴋ"
@@ -475,3 +448,4 @@ async def stream(
             db[chat_id][0]["mystic"] = run
             db[chat_id][0]["markup"] = "tg"
             await mystic.delete()
+EOF
